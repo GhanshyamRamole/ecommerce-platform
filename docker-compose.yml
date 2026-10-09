@@ -40,9 +40,7 @@ services:
       "
 
   backend-migrations:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ai-ecommerce-devops-backend:latest
     container_name: nexvion-backend-migrations
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/nexvion
