@@ -192,7 +192,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ needs.build-and-push.outputs.ecr-registry }}/${{ env.ECR_REPOSITORY }}-${{ matrix.image }}
           tags: |
