@@ -1,0 +1,14 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder
+  labels:
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    argocd.argoproj.io/managed-by: argocd
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nexvion-ecommerce
+        argocd.argoproj.io/managed-by: argocd

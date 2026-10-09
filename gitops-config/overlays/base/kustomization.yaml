@@ -1,0 +1,84 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - kustomize-resources/backend-deployment.yaml
+  - kustomize-resources/backend-service.yaml
+  - kustomize-resources/backend-hpa.yaml
+  - kustomize-resources/backend-configmap.yaml
+  - kustomize-resources/frontend-deployment.yaml
+  - kustomize-resources/frontend-service.yaml
+  - kustomize-resources/frontend-hpa.yaml
+  - kustomize-resources/frontend-configmap.yaml
+  - kustomize-resources/ai-analyzer-deployment.yaml
+  - kustomize-resources/ai-analyzer-secret.yaml
+  - kustomize-resources/ingress.yaml
+  - kustomize-resources/ingress-configmap.yaml
+  - kustomize-resources/network-policies.yaml
+  - kustomize-resources/pod-disruption-budgets.yaml
+  - kustomize-resources/service-monitors.yaml
+  - kustomize-resources/postgresql-statefulset.yaml
+  - kustomize-resources/postgresql-services.yaml
+  - kustomize-resources/postgresql-configmap.yaml
+  - kustomize-resources/postgresql-secrets.yaml
+  - kustomize-resources/postgresql-pvc.yaml
+  - external-secrets/cluster-secret-store.yaml
+  - external-secrets/postgresql-secrets.yaml
+
+namespace: nexvion
+
+commonLabels:
+  app.kubernetes.io/name: nexvion
+  app.kubernetes.io/managed-by: argocd
+
+images:
+  - name: nexvion-frontend
+    newTag: "latest"
+  - name: nexvion-backend
+    newTag: "latest"
+  - name: nexvion-ai-analyzer
+    newTag: "latest"
+
+configMapGenerator:
+  - name: nexvion-config
+    behavior: merge
+    literals:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+
+patchesStrategicMerge:
+  - patches/common-annotations.yaml
+  - patches/common-labels.yaml
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: nexvion-config
+      fieldPath: data.ENVIRONMENT
+    targets:
+      - select:
+          kind: Deployment
+        fieldPaths:
+          - spec.template.spec.containers.[name=backend].env.[name=ENVIRONMENT].value
+          - spec.template.spec.containers.[name=frontend].env.[name=ENVIRONMENT].value
+          - spec.template.spec.containers.[name=ai-analyzer].env.[name=ENVIRONMENT].value
+  - source:
+      kind: ConfigMap
+      name: nexvion-ingress-config
+      fieldPath: data.CERT_ARN
+    targets:
+      - select:
+          kind: Ingress
+        fieldPaths:
+          - metadata.annotations.[alb.ingress.kubernetes.io/certificate-arn]
+  - source:
+      kind: ConfigMap
+      name: nexvion-ingress-config
+      fieldPath: data.HOST
+    targets:
+      - select:
+          kind: Ingress
+        fieldPaths:
+          - spec.rules.[0].host
+          - spec.tls.[0].hosts.[0]

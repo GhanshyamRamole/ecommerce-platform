@@ -1,0 +1,58 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - external-secrets/external-secrets.yaml
+  - external-secrets/ai-analyzer-secrets.yaml
+  - external-secrets/postgresql-secrets.yaml
+
+namespace: nexvion
+
+namePrefix: ""
+
+images:
+  - name: nexvion-frontend
+    newTag: "prod-latest"
+  - name: nexvion-backend
+    newTag: "prod-latest"
+  - name: nexvion-ai-analyzer
+    newTag: "prod-latest"
+
+configMapGenerator:
+  - name: nexvion-config
+    behavior: merge
+    literals:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=warn
+  - name: nexvion-ingress-config
+    behavior: merge
+    literals:
+      - CERT_ARN=arn:aws:acm:ap-south-1:XXXXXXXXXXXX:certificate/PROD-CERT-ID
+      - HOST=nexvion.ghanshyam.site
+
+replicas:
+  - name: nexvion-frontend
+    count: 3
+  - name: nexvion-backend
+    count: 3
+  - name: nexvion-ai-analyzer
+    count: 1
+
+patchesStrategicMerge:
+  - patches/prod-resources.yaml
+  - patches/prod-ingress.yaml
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: nexvion-config
+      fieldPath: data.ENVIRONMENT
+    targets:
+      - select:
+          kind: Deployment
+        fieldPaths:
+          - spec.template.spec.containers.[name=backend].env.[name=ENVIRONMENT].value
+          - spec.template.spec.containers.[name=frontend].env.[name=ENVIRONMENT].value
+          - spec.template.spec.containers.[name=ai-analyzer].env.[name=ENVIRONMENT].value

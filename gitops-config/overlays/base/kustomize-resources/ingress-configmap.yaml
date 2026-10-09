@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexvion-ingress-config
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/managed-by: argocd
+data:
+  CERT_ARN: "arn:aws:acm:ap-south-1:XXXXXXXXXXXX:certificate/PROD-CERT-ID"
+  HOST: "nexvion.ghanshyam.site"

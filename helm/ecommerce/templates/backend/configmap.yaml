@@ -1,0 +1,15 @@
+{{- if .Values.backend.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ecommerce.fullname" . }}-backend-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+data:
+  APP_NAME: "Nexvion API"
+  APP_VERSION: "0.1.0"
+  DEBUG: {{ .Values.backend.env.DEBUG | quote }}
+  CORS_ORIGINS: {{ .Values.backend.env.CORS_ORIGINS | quote }}
+{{- end }}

@@ -1,0 +1,19 @@
+---
+apiVersion: v2
+name: ecommerce
+description: Nexvion E-Commerce Platform Helm Chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ecommerce
+  - fastapi
+  - nginx
+maintainers:
+  - name: Ghanshyam
+    email: ghanshyam@example.com
+dependencies:
+  - name: ingress-nginx
+    version: "4.10.1"
+    repository: "https://kubernetes.github.io/ingress-nginx"
+    condition: ingress-nginx.enabled

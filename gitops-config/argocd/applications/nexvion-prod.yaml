@@ -1,0 +1,56 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexvion-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-options: >
+      CreateNamespace=true,PrunePropagationPolicy=foreground
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: >
+      nexvion-deployments
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: nexvion-alerts
+spec:
+  project: nexvion
+  source:
+    repoURL: https://github.com/your-org/ai-ecommerce-devops.git
+    targetRevision: main
+    path: gitops-config/overlays/prod
+    kustomize:
+      version: v5.4.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexvion
+  syncPolicy:
+    # Production: Manual sync only - requires approval via ArgoCD UI or CLI
+    # automated:
+    #   prune: true
+    #   selfHeal: true
+    #   allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - Validate=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jsonPointers:
+        - /spec/minReplicas
+    - group: ""
+      kind: Secret
+      jsonPointers:
+        - /data
+  revisionHistoryLimit: 20

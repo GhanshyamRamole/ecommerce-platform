@@ -1,0 +1,248 @@
+---
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  environment: production
+  # Certificate ARN for ALB TLS termination - must be set for production
+  # Override via --set global.certificateArn=arn:aws:acm:region:account:
+  #   certificate/id
+  certificateArn: ""
+
+frontend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: nexvion-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  ingress:
+    enabled: true
+    className: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      alb.ingress.kubernetes.io/certificate-arn: >
+        "{{ .Values.global.certificateArn }}"
+      alb.ingress.kubernetes.io/listen-ports: >
+        '[{"HTTP": 80}, {"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/actions.ssl-redirect: >
+        {"Type": "redirect", "RedirectConfig":
+         { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}
+    hosts:
+      - host: nexvion.ghanshyam.site
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: nexvion-tls
+        hosts:
+          - nexvion.ghanshyam.site
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+backend:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: nexvion-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  env:
+    DATABASE_URL: ""
+    JWT_SECRET_KEY: ""
+    CORS_ORIGINS: '["https://nexvion.ghanshyam.site"]'
+    DEBUG: "false"
+  envFrom:
+    - secretRef:
+        name: nexvion-secrets
+
+postgresql:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 5432
+  database: nexvion
+  username: postgres
+  password: ""
+  replication:
+    enabled: false
+    password: ""
+  configMap:
+    enabled: true
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 20Gi
+    subPath: ""
+    selector: {}
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+networkPolicy:
+  enabled: true
+
+# AI Incident Analyzer
+aiAnalyzer:
+  enabled: true
+  replicaCount: 1
+  intervalMinutes: 15
+  alertWebhook: ""
+  image:
+    repository: nexvion-ai-analyzer
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  opensearch:
+    host: "opensearch.monitoring.svc.cluster.local"
+    port: 9200
+    user: "admin"
+    password: ""  # Set via ExternalSecrets
+    use_ssl: true
+    verify_certs: false
+    index: "logs-*"
+  openai:
+    apiKey: ""  # Set via ExternalSecrets
+    model: "gpt-4"
+  externalSecrets:
+    enabled: true
+    opensearchPasswordKey: "opensearch-password"
+    openaiApiKeyKey: "openai-api-key"
+    secretStoreRef:
+      name: "aws-secretsmanager"
+      kind: "ClusterSecretStore"
+
+# Monitoring (Prometheus + Grafana + Loki)
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    retention: 15d
+    storageSize: 20Gi
+  grafana:
+    enabled: true
+    adminPassword: "${GRAFANA_ADMIN_PASSWORD:-admin-change-me}"
+    persistence:
+      enabled: true
+      size: 5Gi
+  loki:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# NGINX Ingress Controller
+ingress-nginx:
+  enabled: true
+  controller:
+    replicaCount: 2
+    image:
+      repository: registry.k8s.io/ingress-nginx/controller
+      tag: v1.9.6
+      digest: ""
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 90Mi
+    service:
+      type: ClusterIP  # Internal LB, ALB sits in front
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+        service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"  # yamllint disable-line rule:line-length
+    config:
+      use-forwarded-headers: "true"
+      compute-full-forwarded-for: "true"
+      use-proxy-protocol: "false"
+      proxy-body-size: "10m"
+      enable-ssl-passthrough: "true"
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+    admissionWebhooks:
+      enabled: true
+    publishService:
+      enabled: true
+    electionID: ingress-nginx-leader
+  defaultBackend:
+    enabled: true
+    image:
+      repository: registry.k8s.io/defaultbackend-amd64
+      tag: 1.5

@@ -1,0 +1,70 @@
+---
+- name: Install PostgreSQL
+  apt:
+    name:
+      - postgresql-{{ pg_version }}
+      - postgresql-contrib-{{ pg_version }}
+      - python3-psycopg2
+    state: present
+    update_cache: true
+
+- name: Install Python PostgreSQL adapter for Ansible
+  apt:
+    name: python3-psycopg2
+    state: present
+    update_cache: true
+
+- name: Start and enable PostgreSQL
+  systemd:
+    name: postgresql
+    state: started
+    enabled: true
+
+- name: Configure PostgreSQL authentication
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version }}/main/pg_hba.conf
+    regexp: '^local\s+all\s+all\s+peer'
+    line: 'local   all             all                                     md5'
+  notify: restart postgresql
+
+- name: Configure PostgreSQL listen addresses
+  lineinfile:
+    path: /etc/postgresql/{{ pg_version }}/main/postgresql.conf
+    regexp: "^#?listen_addresses"
+    line: "listen_addresses = '*'"
+  notify: restart postgresql
+
+- name: Set postgres user password
+  become_user: postgres
+  postgresql_user:
+    name: "{{ db_user }}"
+    password: "{{ db_password }}"
+    state: present
+
+- name: Create database
+  become_user: postgres
+  postgresql_db:
+    name: "{{ db_name }}"
+    owner: "{{ db_user }}"
+    encoding: UTF-8
+    lc_collate: en_US.UTF-8
+    lc_ctype: en_US.UTF-8
+    state: present
+
+- name: Grant privileges
+  become_user: postgres
+  postgresql_privs:
+    db: "{{ db_name }}"
+    role: "{{ db_user }}"
+    privs: ALL
+    type: database
+    state: present
+
+- name: Configure firewall (ufw)
+  ufw:
+    rule: allow
+    port: 5432
+    proto: tcp
+    src: "{{ item }}"
+  loop: "{{ allowed_cidrs | default(['10.0.0.0/8']) }}"
+  when: configure_firewall | default(true)

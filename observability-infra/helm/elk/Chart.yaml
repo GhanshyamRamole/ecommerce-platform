@@ -1,0 +1,33 @@
+apiVersion: v2
+name: elk
+description: ELK Stack (Elasticsearch, Logstash, Kibana, Filebeat) for centralized logging
+type: application
+version: 1.0.0
+appVersion: "8.11.0"
+keywords:
+  - elasticsearch
+  - logstash
+  - kibana
+  - filebeat
+  - logging
+  - elk
+maintainers:
+  - name: DevOps Team
+    email: devops@nexvion.com
+dependencies:
+  - name: elasticsearch
+    version: "8.5.1"
+    repository: "https://helm.elastic.co"
+    condition: elasticsearch.enabled
+  - name: logstash
+    version: "8.5.1"
+    repository: "https://helm.elastic.co"
+    condition: logstash.enabled
+  - name: kibana
+    version: "8.5.1"
+    repository: "https://helm.elastic.co"
+    condition: kibana.enabled
+  - name: filebeat
+    version: "8.5.1"
+    repository: "https://helm.elastic.co"
+    condition: filebeat.enabled

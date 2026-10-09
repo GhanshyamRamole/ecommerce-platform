@@ -1,0 +1,24 @@
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nexvion-frontend
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nexvion-frontend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

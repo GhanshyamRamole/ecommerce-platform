@@ -1,0 +1,334 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: nexvion
+  HELM_CHART_PATH: ./helm/ecommerce
+  GITOPS_REPO: ${{ github.repository }}-gitops  # Separate gitops config repo (e.g., org/ecommerce-gitops)
+
+jobs:
+  lint-and-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install -e ".[dev]"
+
+      - name: Run Ruff linting
+        run: cd backend && ruff check .
+
+      - name: Run MyPy type checking
+        run: cd backend && mypy app
+
+      - name: Run backend tests
+        run: cd backend && pytest --cov=app --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./backend/coverage.xml
+
+  sast-sonarqube:
+    name: SAST - SonarQube
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for SonarCloud analysis
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install -e ".[dev]"
+
+      - name: Run tests with coverage
+        run: cd backend && pytest --cov=app --cov-report=xml
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  sca-dependency-check:
+    name: SCA - Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        id: depcheck
+        with:
+          project: 'nexvion-backend'
+          path: 'backend'
+          format: 'HTML'
+          args: '--failOnCVSS 7 --prettyPrint'
+
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: backend/dependency-check-report.html
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: '--verbose --redact'
+
+  build-and-push:
+    name: Build & Push Images
+    needs: [lint-and-test, sast-sonarqube, sca-dependency-check, security-scan]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      ecr-registry: ${{ steps.login-ecr.outputs.registry }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set ECR Registry Output
+        run: echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_OUTPUT
+
+  build-images:
+    name: Build & Push ${{ matrix.image }}
+    needs: [lint-and-test, sast-sonarqube, sca-dependency-check, security-scan, build-and-push]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        image: [backend, frontend, ai-analyzer]
+        include:
+          - image: backend
+            context: ./backend
+            dockerfile: Dockerfile
+            ecr-suffix: backend
+          - image: frontend
+            context: ./frontend
+            dockerfile: Dockerfile
+            ecr-suffix: frontend
+          - image: ai-analyzer
+            context: ./ai/incident-analysis
+            dockerfile: Dockerfile
+            ecr-suffix: ai-analyzer
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.build-and-push.outputs.ecr-registry }}/${{ env.ECR_REPOSITORY }}-${{ matrix.image }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          dockerfile: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build-and-push.outputs.ecr-registry }}/${{ env.ECR_REPOSITORY }}-${{ matrix.image }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-image-${{ matrix.image }}.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload image scan
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-image-${{ matrix.image }}.sarif'
+
+  gitops-update:
+    name: GitOps Update ${{ matrix.env }}
+    needs: [build-and-push, build-images]
+    runs-on: ubuntu-latest
+    if: |
+      (matrix.env == 'dev' && github.ref == 'refs/heads/develop') ||
+      (matrix.env == 'staging' && github.ref == 'refs/heads/develop') ||
+      (matrix.env == 'prod' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: write
+      pull-requests: write
+    strategy:
+      matrix:
+        env: [dev, staging, prod]
+        include:
+          - env: dev
+            branch: develop
+            overlay: dev
+            create_pr: false
+            commit_msg: "chore(dev): update images to ${{ github.sha }} [skip ci]"
+          - env: staging
+            branch: develop
+            overlay: staging
+            create_pr: false
+            commit_msg: "chore(staging): update images to ${{ github.sha }} [skip ci]"
+          - env: prod
+            branch: main
+            overlay: prod
+            create_pr: true
+            commit_msg: "release: ${{ github.sha }}"
+    steps:
+      - name: Checkout gitops-config repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_BOT_TOKEN }}
+          path: gitops-config
+
+      - name: Setup kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: v5.4.0
+
+      - name: Update image tags
+        env:
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr-registry }}
+        run: |
+          cd gitops-config/overlays/${{ matrix.overlay }}
+          kustomize edit set image nexvion-frontend=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}-frontend:${{ github.sha }}
+          kustomize edit set image nexvion-backend=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}-backend:${{ github.sha }}
+          kustomize edit set image nexvion-ai-analyzer=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}-ai-analyzer:${{ github.sha }}
+
+      - name: Commit and push changes
+        if: ${{ !matrix.create_pr }}
+        run: |
+          cd gitops-config
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add overlays/${{ matrix.overlay }}
+          git diff --cached --quiet || git commit -m "${{ matrix.commit_msg }}"
+          git push
+
+      - name: Create release branch and PR
+        if: ${{ matrix.create_pr }}
+        run: |
+          cd gitops-config
+          git checkout -b release/${{ github.sha }} main
+          cd overlays/${{ matrix.overlay }}
+          kustomize edit set image nexvion-frontend=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}-frontend:${{ github.sha }}
+          kustomize edit set image nexvion-backend=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}-backend:${{ github.sha }}
+          kustomize edit set image nexvion-ai-analyzer=${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}-ai-analyzer:${{ github.sha }}
+          git add overlays/${{ matrix.overlay }}
+          git commit -m "${{ matrix.commit_msg }}"
+          git push origin release/${{ github.sha }}
+
+      - name: Create Pull Request for production approval
+        if: ${{ matrix.create_pr }}
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITOPS_BOT_TOKEN }}
+          title: "Release ${{ github.sha }} to Production"
+          body: |
+            ## Production Release
+
+            This PR updates the production environment to image tag `${{ github.sha }}`.
+
+            **Changes:**
+            - Frontend: `${{ needs.build-and-push.outputs.ecr-registry }}/${{ env.ECR_REPOSITORY }}-frontend:${{ github.sha }}`
+            - Backend: `${{ needs.build-and-push.outputs.ecr-registry }}/${{ env.ECR_REPOSITORY }}-backend:${{ github.sha }}`
+            - AI Analyzer: `${{ needs.build-and-push.outputs.ecr-registry }}/${{ env.ECR_REPOSITORY }}-ai-analyzer:${{ github.sha }}`
+
+            **Review Checklist:**
+            - [ ] All tests pass in staging
+            - [ ] No critical security vulnerabilities
+            - [ ] Database migrations reviewed (if any)
+            - [ ] Rollback plan documented
+
+            **Merge Instructions:**
+            1. Approve this PR
+            2. Merge to `main` branch
+            3. ArgoCD will automatically sync the production application
+
+            _Generated by GitHub Actions_
+          labels: production-release, needs-approval
+          base: main
+          head: release/${{ github.sha }}
+          draft: false

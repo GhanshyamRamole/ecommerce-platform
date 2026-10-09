@@ -1,0 +1,471 @@
+pipeline {
+    agent none
+
+    options {
+        timestamps()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+        // Builds are started by the nexvion-orchestrator job (or manually).
+        // Without this, branch indexing would start a duplicate build per commit.
+        overrideIndexTriggers(false)
+    }
+
+    parameters {
+        booleanParam(name: 'FORCE_RUN', defaultValue: false,
+                     description: 'Run CI even when no files for this service changed (deploy rules still apply)')
+        booleanParam(name: 'RUN_SONAR', defaultValue: true,
+                     description: 'Run SonarQube analysis and enforce the quality gate')
+    }
+
+    environment {
+        SERVICE_NAME      = 'frontend'
+        SERVICE_DIR       = 'frontend'
+        HELM_KEY          = 'frontend'
+        HELM_COMPONENT    = 'frontend'
+        SONAR_PROJECT_KEY = 'nexvion-frontend'
+
+        AWS_REGION        = 'ap-south-1'
+        ECR_REPOSITORY    = 'nexvion'
+        EKS_CLUSTER       = 'nexvion-cluster'
+        HELM_CHART_PATH   = 'helm/ecommerce'
+
+        STAGING_URL       = 'https://staging-nexvion.ghanshyam.site'
+        STAGING_RELEASE   = 'nexvion-staging'
+        STAGING_NAMESPACE = 'nexvion-staging'
+        PRODUCTION_URL    = 'https://nexvion.ghanshyam.site'
+        PROD_RELEASE      = 'nexvion'
+        PROD_NAMESPACE    = 'nexvion'
+        // Comma-separated Jenkins users/groups allowed to approve production deploys ('' = anyone who can build)
+        PROD_APPROVERS    = ''
+
+        // Tool images - pinned so builds are reproducible. Bump deliberately.
+        NODE_IMAGE     = 'node:20-alpine'
+        NGINX_IMAGE    = 'nginx:alpine'
+        SONAR_IMAGE    = 'sonarsource/sonar-scanner-cli:5.0.1'
+        GITLEAKS_IMAGE = 'zricethezav/gitleaks:v8.21.2'
+        TRIVY_IMAGE    = 'aquasec/trivy:0.58.1'
+
+        // Image scan fails the build at this severity (HIGH is reported but not blocking)
+        TRIVY_FAIL_SEVERITY = 'CRITICAL'
+    }
+
+    stages {
+
+        stage('CI') {
+            agent any
+
+            stages {
+
+                stage('Checkout') {
+                    steps {
+                        checkout scm
+                        script {
+                            env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+                            env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                            env.IMAGE_TAG        = "${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+                            env.CI_ID            = "${env.SERVICE_NAME}-${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+                            env.IMAGE_PUSHED     = 'false'
+                            withCredentials([string(credentialsId: 'aws-account-id', variable: 'AWS_ACCOUNT_ID')]) {
+                                env.REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                            }
+                            env.IMAGE_REPO = "${env.REGISTRY}/${env.ECR_REPOSITORY}-${env.SERVICE_NAME}"
+                            currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.GIT_COMMIT_SHORT}"
+                        }
+                        sh 'mkdir -p reports'
+                    }
+                }
+
+                stage('Detect Changes') {
+                    steps {
+                        script {
+                            // Compare with the last SUCCESSFUL build of this job, so a failed build is retried
+                            // automatically and several commits pushed together are all considered.
+                            def changed = sh(returnStdout: true, script: '''#!/usr/bin/env bash
+                                set -uo pipefail
+                                base="${GIT_PREVIOUS_SUCCESSFUL_COMMIT:-}"
+                                [ -n "$base" ] || base="$(git rev-parse --verify -q HEAD~1 || true)"
+                                if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+                                    echo "__ALL__"; exit 0
+                                fi
+                                git diff --name-only "$base" HEAD 2>/dev/null || echo "__ALL__"
+                            ''').trim()
+
+                            def files         = changed ? changed.readLines() : []
+                            boolean relevant  = pathsTouched(files, ['__ALL__', "${env.SERVICE_DIR}/".toString(), 'helm/'])
+                            boolean userBuild = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause').size() > 0
+                            boolean forced    = params.FORCE_RUN == true
+
+                            env.RUN_CI = (relevant || userBuild || forced) ? 'true' : 'false'
+                            echo "Changed files: ${files.size()} | relevant=${relevant} manual=${userBuild} force=${forced} => RUN_CI=${env.RUN_CI}"
+                        }
+                    }
+                }
+
+                stage('Quality & Security Checks') {
+                    when { expression { env.RUN_CI == 'true' } }
+                    failFast true
+                    parallel {
+                        stage('Lint & Validate') {
+                            steps {
+                                sh '''#!/usr/bin/env bash
+                                    set -euo pipefail
+                                    CACHE="$HOME/.cache/nexvion-ci"; mkdir -p "$CACHE/npm"
+                                    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/cache/npm \
+                                        -v "$PWD:/workspace" -v "$CACHE:/cache" -w /workspace/frontend "${NODE_IMAGE}" sh -euc '
+                                            echo "==> JavaScript syntax"
+                                            for f in *.js; do node --check "$f"; done
+                                            echo "==> HTML lint"
+                                            npx --yes htmlhint@1.1.4 "*.html"
+                                        '
+                                    echo "==> nginx configuration"
+                                    docker run --rm --add-host backend:127.0.0.1 \
+                                        -v "$PWD/frontend/nginx.conf:/etc/nginx/nginx.conf:ro" "${NGINX_IMAGE}" nginx -t
+                                '''
+                            }
+                        }
+
+                        stage('Secrets Scan') {
+                            steps {
+                                sh '''#!/usr/bin/env bash
+                                    set -euo pipefail
+                                    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "${GITLEAKS_IMAGE}" \
+                                        detect --no-git --source "/repo/${SERVICE_DIR}" --redact --no-banner --exit-code 1 \
+                                        --report-format json --report-path "/repo/reports/gitleaks-${SERVICE_NAME}.json"
+                                '''
+                            }
+                        }
+
+                        stage('Filesystem Scan') {
+                            steps {
+                                sh '''#!/usr/bin/env bash
+                                    set -euo pipefail
+                                    CACHE="$HOME/.cache/nexvion-ci"; mkdir -p "$CACHE/trivy"
+                                    trivy() {
+                                        docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e TRIVY_CACHE_DIR=/cache/trivy \
+                                            -v "$CACHE:/cache" -v "$PWD:/workspace" -w /workspace "${TRIVY_IMAGE}" "$@"
+                                    }
+                                    trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --ignore-unfixed --format table \
+                                        --output "reports/trivy-fs-${SERVICE_NAME}.txt" --exit-code 0 "${SERVICE_DIR}"
+                                    trivy fs --scanners vuln,misconfig --severity "${TRIVY_FAIL_SEVERITY}" --ignore-unfixed \
+                                        --exit-code 1 "${SERVICE_DIR}"
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('SAST - SonarQube') {
+                    when {
+                        allOf {
+                            expression { env.RUN_CI == 'true' }
+                            expression { params.RUN_SONAR != false }
+                        }
+                    }
+                    steps {
+                        withCredentials([
+                            string(credentialsId: 'sonarqube-token',    variable: 'SONAR_TOKEN'),
+                            string(credentialsId: 'sonarqube-host-url', variable: 'SONAR_HOST_URL')
+                        ]) {
+                            // Token/URL are passed by name (-e VAR) so they never appear on a command line.
+                            sh '''#!/usr/bin/env bash
+                                set -euo pipefail
+                                CACHE="$HOME/.cache/nexvion-ci"; mkdir -p "$CACHE/sonar"
+                                docker run --rm --user "$(id -u):$(id -g)" \
+                                    -e SONAR_TOKEN -e SONAR_HOST_URL -e SONAR_USER_HOME=/cache/sonar \
+                                    -v "$PWD:/workspace" -v "$CACHE:/cache" -w "/workspace/${SERVICE_DIR}" \
+                                    "${SONAR_IMAGE}" sonar-scanner \
+                                        -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+                                        -Dsonar.projectVersion="${IMAGE_TAG}" \
+                                        -Dsonar.sourceEncoding=UTF-8 \
+                                        -Dsonar.sources=. \
+                                        -Dsonar.exclusions='**/node_modules/**,**/dist/**,**/build/**' \
+                                        -Dsonar.qualitygate.wait=true \
+                                        -Dsonar.qualitygate.timeout=300
+                            '''
+                        }
+                    }
+                }
+
+                stage('Image') {
+                    when {
+                        allOf {
+                            expression { env.RUN_CI == 'true' }
+                            anyOf {
+                                branch 'main'
+                                branch 'develop'
+                                branch 'release/*'
+                            }
+                        }
+                    }
+                    stages {
+                        stage('Build') {
+                            steps {
+                                sh '''#!/usr/bin/env bash
+                                    set -euo pipefail
+                                    docker build --pull \
+                                        --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+                                        --label "org.opencontainers.image.source=${GIT_URL:-unknown}" \
+                                        --label "org.opencontainers.image.version=${IMAGE_TAG}" \
+                                        -f "${SERVICE_DIR}/Dockerfile" \
+                                        -t "${IMAGE_REPO}:${IMAGE_TAG}" \
+                                        "${SERVICE_DIR}"
+                                '''
+                            }
+                        }
+
+                        // Scan BEFORE pushing so a vulnerable image never reaches the registry.
+                        stage('Scan Image') {
+                            steps {
+                                sh '''#!/usr/bin/env bash
+                                    set -euo pipefail
+                                    CACHE="$HOME/.cache/nexvion-ci"; mkdir -p "$CACHE/trivy"
+                                    trivy() {
+                                        docker run --rm --user "$(id -u):$(id -g)" \
+                                            --group-add "$(stat -c %g /var/run/docker.sock)" \
+                                            -v /var/run/docker.sock:/var/run/docker.sock \
+                                            -e HOME=/tmp -e TRIVY_CACHE_DIR=/cache/trivy \
+                                            -v "$CACHE:/cache" -v "$PWD:/workspace" -w /workspace \
+                                            "${TRIVY_IMAGE}" "$@"
+                                    }
+                                    ref="${IMAGE_REPO}:${IMAGE_TAG}"
+                                    trivy image --severity HIGH,CRITICAL --ignore-unfixed --format table \
+                                        --output "reports/trivy-image-${SERVICE_NAME}.txt" --exit-code 0 "$ref"
+                                    trivy image --severity "${TRIVY_FAIL_SEVERITY}" --ignore-unfixed --exit-code 1 "$ref"
+                                '''
+                            }
+                        }
+
+                        stage('Push to ECR') {
+                            steps {
+                                withCredentials([
+                                    string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+                                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                                ]) {
+                                    // Fresh ECR token every run (tokens expire after 12h) and an isolated
+                                    // docker config so credentials never persist on the agent.
+                                    sh '''#!/usr/bin/env bash
+                                        set -euo pipefail
+                                        export AWS_DEFAULT_REGION="${AWS_REGION}"
+                                        DOCKER_CONFIG="$(mktemp -d)"; export DOCKER_CONFIG
+                                        trap 'rm -rf "${DOCKER_CONFIG}"' EXIT
+                                        aws ecr get-login-password --region "${AWS_REGION}" \
+                                            | docker login --username AWS --password-stdin "${REGISTRY}"
+                                        docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+                                        if [ "${BRANCH_NAME}" = "main" ]; then
+                                            docker tag "${IMAGE_REPO}:${IMAGE_TAG}" "${IMAGE_REPO}:latest"
+                                            docker push "${IMAGE_REPO}:latest"
+                                        fi
+                                    '''
+                                }
+                                // Ship the exact chart revision that was built to the deploy stages.
+                                stash name: 'deploy-chart', includes: "${env.HELM_CHART_PATH}/**"
+                                script { env.IMAGE_PUSHED = 'true' }
+                            }
+                        }
+                    }
+                }
+            }
+
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+                    script {
+                        if (env.IMAGE_REPO && env.IMAGE_TAG) {
+                            sh 'docker image rm -f "${IMAGE_REPO}:${IMAGE_TAG}" "${IMAGE_REPO}:latest" >/dev/null 2>&1 || true'
+                        }
+                    }
+                }
+                cleanup {
+                    cleanWs(deleteDirs: true, notFailBuild: true)
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            when {
+                beforeAgent true
+                allOf {
+                    branch 'develop'
+                    expression { env.IMAGE_PUSHED == 'true' }
+                }
+            }
+            agent any
+            steps {
+                unstash 'deploy-chart'
+                script { deployService('staging') }
+            }
+            post {
+                cleanup { cleanWs(deleteDirs: true, notFailBuild: true) }
+            }
+        }
+
+        stage('Approve Production Deploy') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { env.IMAGE_PUSHED == 'true' }
+                }
+            }
+            options { timeout(time: 2, unit: 'HOURS') }
+            steps {
+                script {
+                    def args = [message: "Deploy ${env.SERVICE_NAME} ${env.IMAGE_TAG} to PRODUCTION?", ok: 'Deploy']
+                    if (env.PROD_APPROVERS) { args.submitter = env.PROD_APPROVERS }
+                    input(args)
+                }
+            }
+        }
+
+        stage('Deploy to Production') {
+            when {
+                beforeAgent true
+                allOf {
+                    branch 'main'
+                    expression { env.IMAGE_PUSHED == 'true' }
+                }
+            }
+            agent any
+            steps {
+                unstash 'deploy-chart'
+                script { deployService('production') }
+            }
+            post {
+                cleanup { cleanWs(deleteDirs: true, notFailBuild: true) }
+            }
+        }
+    }
+
+    post {
+        failure  { script { notifyBuild('FAILURE') } }
+        unstable { script { notifyBuild('UNSTABLE') } }
+        fixed    { script { notifyBuild('BACK TO NORMAL') } }
+    }
+}
+
+// Plain-JVM logic kept out of the CPS interpreter.
+@NonCPS
+boolean pathsTouched(List files, List prefixes) {
+    for (f in files) {
+        for (p in prefixes) {
+            if (f == p || f.startsWith(p)) { return true }
+        }
+    }
+    return false
+}
+
+// Deploys this service into the single Helm release of the target environment.
+// Only this service's image tag changes (--reuse-values keeps the others), and only
+// this service's rollout is awaited, so services deploy independently.
+def deployService(String target) {
+    boolean prod = (target == 'production')
+    withCredentials([
+        string(credentialsId: 'aws-access-key-id',     variable: 'AWS_ACCESS_KEY_ID'),
+        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+    ]) {
+        withEnv([
+            "TARGET=${target}",
+            "RELEASE=${prod ? env.PROD_RELEASE : env.STAGING_RELEASE}",
+            "NAMESPACE=${prod ? env.PROD_NAMESPACE : env.STAGING_NAMESPACE}",
+            "VALUES_FILE=${prod ? 'values-prod.yaml' : 'values-staging.yaml'}",
+            "SMOKE_URL=${prod ? env.PRODUCTION_URL : env.STAGING_URL}"
+        ]) {
+            sh '''#!/usr/bin/env bash
+                set -euo pipefail
+                export AWS_DEFAULT_REGION="${AWS_REGION}"
+                KUBECONFIG="$(mktemp)"; export KUBECONFIG
+                trap 'rm -f "${KUBECONFIG}"' EXIT
+
+                # Poll $1 until the body matches regex $2 (about 2 minutes).
+                curl_until() {
+                    for _ in $(seq 1 20); do
+                        if curl -fsS --max-time 10 "$1" 2>/dev/null | grep -Eq "$2"; then return 0; fi
+                        sleep 6
+                    done
+                    echo "Smoke test failed: $1 did not return the expected content" >&2
+                    return 1
+                }
+                smoke_test() {
+                    curl_until "${SMOKE_URL}/health" 'healthy'
+                }
+
+                chart="${HELM_CHART_PATH}"
+                set_args=(
+                    --set-string "frontend.image.repository=${REGISTRY}/${ECR_REPOSITORY}-frontend"
+                    --set-string "backend.image.repository=${REGISTRY}/${ECR_REPOSITORY}-backend"
+                    --set-string "aiAnalyzer.image.repository=${REGISTRY}/${ECR_REPOSITORY}-ai-analyzer"
+                    --set-string "${HELM_KEY}.image.tag=${IMAGE_TAG}"
+                )
+
+                aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region "${AWS_REGION}" --kubeconfig "${KUBECONFIG}" >/dev/null
+                helm dependency build "${chart}"
+                helm lint "${chart}" -f "${chart}/${VALUES_FILE}" "${set_args[@]}"
+
+                # Let any in-flight operation on this release (another service's deploy) finish first.
+                for _ in $(seq 1 60); do
+                    helm list -n "${NAMESPACE}" --pending -q --filter "^${RELEASE}\\$" 2>/dev/null | grep -q . || break
+                    sleep 10
+                done
+
+                echo "==> Deploying ${SERVICE_NAME}:${IMAGE_TAG} to ${TARGET} (release ${RELEASE}, namespace ${NAMESPACE})"
+                for attempt in 1 2 3 4 5 6; do
+                    if out="$(helm upgrade --install "${RELEASE}" "${chart}" \
+                            --namespace "${NAMESPACE}" --create-namespace \
+                            -f "${chart}/${VALUES_FILE}" --reuse-values "${set_args[@]}" \
+                            --timeout 10m 2>&1)"; then
+                        echo "${out}"; break
+                    fi
+                    echo "${out}" >&2
+                    if [ "${attempt}" -lt 6 ] && grep -q "another operation" <<<"${out}"; then
+                        echo "Release busy (another deploy running), retrying in 20s..." >&2; sleep 20; continue
+                    fi
+                    exit 1
+                done
+
+                selector="app.kubernetes.io/component=${HELM_COMPONENT}"
+                deployments="$(kubectl -n "${NAMESPACE}" get deploy -l "${selector}" -o name)"
+                if [ -z "${deployments}" ]; then echo "No deployment found for ${selector}" >&2; exit 1; fi
+
+                healthy=true
+                for d in ${deployments}; do
+                    kubectl -n "${NAMESPACE}" rollout status "${d}" --timeout=600s || healthy=false
+                done
+                if [ "${healthy}" = true ]; then smoke_test || healthy=false; fi
+
+                if [ "${healthy}" != true ]; then
+                    echo "!! Deployment of ${SERVICE_NAME} failed verification - rolling back ${RELEASE}" >&2
+                    helm rollback "${RELEASE}" -n "${NAMESPACE}" --wait --timeout 5m \
+                        || echo "Rollback not possible (no previous revision?)" >&2
+                    exit 1
+                fi
+                echo "==> ${SERVICE_NAME} ${IMAGE_TAG} is healthy on ${TARGET}"
+            '''
+        }
+    }
+}
+
+// Mail on failure / unstable / recovery only (not on every success).
+def notifyBuild(String status) {
+    String recipients = ''
+    try {
+        withCredentials([string(credentialsId: 'default-recipients', variable: 'DEFAULT_RECIPIENTS')]) {
+            recipients = env.DEFAULT_RECIPIENTS
+        }
+    } catch (Exception ignored) {
+        echo "Credential 'default-recipients' not configured - notifying commit authors/requester only."
+    }
+    try {
+        emailext(
+            subject: "[${status}] ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+            body: "Job: ${env.JOB_NAME}\nBuild: ${env.BUILD_URL}\nBranch: ${env.BRANCH_NAME}\n" +
+                  "Commit: ${env.GIT_COMMIT_SHORT ?: 'n/a'}\nImage tag: ${env.IMAGE_TAG ?: 'n/a'}\n" +
+                  "Result: ${currentBuild.currentResult}\n",
+            to: recipients,
+            recipientProviders: [culprits(), requestor()],
+            mimeType: 'text/plain'
+        )
+    } catch (Throwable t) {
+        echo "Email notification failed (is Email Extension configured?): ${t.getMessage()}"
+    }
+}

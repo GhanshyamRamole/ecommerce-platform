@@ -1,0 +1,62 @@
+{{- if .Values.opensearch-dashboards.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-opensearch-dashboards
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+    component: dashboards
+spec:
+  type: {{ .Values.opensearch-dashboards.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.opensearch-dashboards.service.port }}
+      targetPort: 5601
+      protocol: TCP
+  selector:
+    app: {{ .Release.Name }}-opensearch-dashboards
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-opensearch-dashboards
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+    component: dashboards
+spec:
+  replicas: {{ .Values.opensearch-dashboards.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-opensearch-dashboards
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-opensearch-dashboards
+    spec:
+      containers:
+        - name: opensearch-dashboards
+          image: {{ .Values.opensearch-dashboards.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5601
+              name: http
+          env:
+            - name: OPENSEARCH_HOSTS
+              value: {{ .Values.opensearch-dashboards.opensearchHosts }}
+          resources:
+            {{- toYaml .Values.opensearch-dashboards.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: 5601
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: 5601
+            initialDelaySeconds: 30
+            periodSeconds: 10
+{{- end }}

@@ -1,0 +1,10 @@
+# Terraform Variables for Production
+# Copy this file to terraform.tfvars and fill in your values
+
+aws_region       = "ap-south-1"
+environment      = "prod"
+domain_name      = "ghanshyam.site"
+subdomain        = "nexvion"
+key_pair_name    = "your-aws-key-pair-name"
+db_password      = "your-secure-postgres-password"
+certificate_arn  = "arn:aws:acm:ap-south-1:YOUR_ACCOUNT_ID:certificate/YOUR_CERT_ID"

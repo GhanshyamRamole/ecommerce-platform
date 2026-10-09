@@ -1,0 +1,277 @@
+# ELK Stack Values
+# Using official Elastic Helm charts as dependencies
+
+global:
+  elasticsearch:
+    hosts: ["http://{{ .Release.Name }}-elasticsearch-master:9200"]
+  kibana:
+    host: "http://{{ .Release.Name }}-kibana:5601"
+
+# Elasticsearch
+elasticsearch:
+  enabled: true
+  replicas: 2
+  minimumMasterNodes: 2
+  imageTag: "8.11.0"
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  volumeClaimTemplate:
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: "gp3"
+    resources:
+      requests:
+        storage: "30Gi"
+  config:
+    discovery.seed_hosts: "{{ .Release.Name }}-elasticsearch-master"
+    cluster.name: "{{ .Release.Name }}-elk"
+    xpack.security.enabled: "false"
+    xpack.monitoring.enabled: "true"
+  persistence:
+    enabled: true
+  service:
+    type: ClusterIP
+    ports:
+      http: 9200
+      transport: 9300
+
+# Logstash
+logstash:
+  enabled: true
+  replicas: 2
+  imageTag: "8.11.0"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  config:
+    logstash.yml: |
+      http.host: "0.0.0.0"
+      xpack.monitoring.enabled: true
+      xpack.monitoring.elasticsearch.hosts: [ "http://{{ .Release.Name }}-elasticsearch-master:9200" ]
+  pipelines:
+    - pipeline.id: main
+      config.string: |
+        input {
+          beats {
+            port => 5044
+            host => "0.0.0.0"
+          }
+          http {
+            port => 8080
+            host => "0.0.0.0"
+          }
+        }
+        filter {
+          if [fields][service] == "backend" {
+            json {
+              source => "message"
+            }
+            if [level] {
+              mutate { uppercase => ["level"] }
+            }
+            if [stack_trace] {
+              mutate { gsub => ["stack_trace", "\n", " | "] }
+            }
+          }
+          if [fields][service] == "frontend" {
+            json {
+              source => "message"
+            }
+          }
+          # Add Kubernetes metadata
+          kubernetes {
+            metadata {
+              labels => true
+              annotations => true
+            }
+          }
+        }
+        output {
+          elasticsearch {
+            hosts => ["{{ .Release.Name }}-elasticsearch-master:9200"]
+            index => "logs-%{[@metadata][beat]}-%{+YYYY.MM.dd}"
+            template_name => "logs-template"
+            template => "/usr/share/logstash/templates/logs-template.json"
+            template_overwrite => true
+          }
+        }
+  service:
+    type: ClusterIP
+    ports:
+      beats: 5044
+      http: 8080
+
+# Kibana
+kibana:
+  enabled: true
+  replicas: 1
+  imageTag: "8.11.0"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  config:
+    elasticsearch.hosts: ["http://{{ .Release.Name }}-elasticsearch-master:9200"]
+    elasticsearch.requestTimeout: 90000
+    xpack.security.enabled: false
+    xpack.monitoring.enabled: true
+  service:
+    type: ClusterIP
+    port: 5601
+  ingress:
+    enabled: true
+    className: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/certificate-arn: ""
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/actions.ssl-redirect: '{"Type": "redirect", "RedirectConfig": { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}'
+    hosts:
+      - host: kibana.{{ .Values.global.domain }}
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: kibana-tls
+        hosts:
+          - kibana.{{ .Values.global.domain }}
+
+# Filebeat
+filebeat:
+  enabled: true
+  imageTag: "8.11.0"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "100Mi"
+    limits:
+      cpu: "200m"
+      memory: "200Mi"
+  config:
+    filebeat.yml: |
+      filebeat.inputs:
+        - type: container
+          paths:
+            - /var/log/containers/*.log
+          processors:
+            - add_kubernetes_metadata:
+                host: ${NODE_NAME}
+                matchers:
+                  - logs_path:
+                      logs_path: "/var/log/containers/"
+            - add_cloud_metadata: ~
+            - add_host_metadata: ~
+      filebeat.config.modules:
+        path: ${path.config}/modules.d/*.yml
+        reload.enabled: false
+      output.logstash:
+        hosts: ["{{ .Release.Name }}-logstash:5044"]
+      logging.level: info
+      logging.to_files: true
+      logging.files:
+        path: /var/log/filebeat
+        name: filebeat
+        keepfiles: 7
+        permissions: 0644
+  daemonset:
+    enabled: true
+    volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+    volumeMounts:
+      - name: varlog
+        mountPath: /var/log
+      - name: varlibdockercontainers
+        mountPath: /var/lib/docker/containers
+        readOnly: true
+      - name: config
+        mountPath: /usr/share/filebeat/filebeat.yml
+        subPath: filebeat.yml
+        readOnly: true
+
+# Index templates for application logs
+indexTemplates:
+  enabled: true
+  templates:
+    - name: logs-template
+      indexPatterns: ["logs-*"]
+      settings:
+        number_of_shards: 1
+        number_of_replicas: 1
+        refresh_interval: "30s"
+        lifecycle:
+          name: "logs-policy"
+      mappings:
+        properties:
+          "@timestamp":
+            type: "date"
+          level:
+            type: "keyword"
+          message:
+            type: "text"
+          service:
+            type: "keyword"
+          trace_id:
+            type: "keyword"
+          stack_trace:
+            type: "text"
+          kubernetes:
+            properties:
+              namespace:
+                type: "keyword"
+              pod:
+                type: "keyword"
+              container:
+                type: "keyword"
+              labels:
+                type: "object"
+
+# ILM policies for log retention
+ilmPolicies:
+  enabled: true
+  policies:
+    - name: logs-policy
+      policy:
+        phases:
+          hot:
+            min_age: "0ms"
+            actions:
+              rollover:
+                max_size: "10gb"
+                max_age: "7d"
+          warm:
+            min_age: "7d"
+            actions:
+              shrink:
+                number_of_shards: 1
+              forcemerge:
+                max_num_segments: 1
+          cold:
+            min_age: "30d"
+            actions:
+              readonly: {}
+          delete:
+            min_age: "90d"
+            actions:
+              delete: {}
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  interval: 30s

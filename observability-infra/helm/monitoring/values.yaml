@@ -1,0 +1,327 @@
+# Monitoring Stack Values
+# Deploy: helm upgrade --install monitoring ./observability-infra/helm/monitoring -n monitoring --create-namespace -f values.yaml
+
+# Global settings
+global:
+  clusterName: "nexvion"
+  region: "ap-south-1"
+
+# kube-prometheus-stack configuration
+kube-prometheus-stack:
+  enabled: true
+
+  # Prometheus configuration
+  prometheus:
+    enabled: true
+    prometheusSpec:
+      retention: 15d
+      retentionSize: "50GiB"
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: gp3
+            resources:
+              requests:
+                storage: 50Gi
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+      serviceMonitorSelectorNilUsesHelmValues: false
+      serviceMonitorSelector: {}
+      podMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelector: {}
+      ruleSelectorNilUsesHelmValues: false
+      ruleSelector: {}
+      additionalScrapeConfigs:
+        - job_name: 'loki'
+          static_configs:
+            - targets: ['loki.monitoring.svc.cluster.local:3100']
+
+  # Alertmanager configuration
+  alertmanager:
+    enabled: true
+    alertmanagerSpec:
+      retention: 120h
+      storage:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: gp3
+            resources:
+              requests:
+                storage: 10Gi
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    config:
+      global:
+        resolve_timeout: 5m
+      route:
+        group_by: ['alertname', 'namespace']
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
+        receiver: 'slack'
+        routes:
+          - match:
+              severity: critical
+            receiver: 'slack-critical'
+            continue: true
+      receivers:
+        - name: 'slack'
+          slack_configs:
+            - api_url: "$SLACK_WEBHOOK_URL"
+              channel: "#nexvion-alerts"
+              title: "{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+              text: "{{ range .Alerts }}{{ .Annotations.description }}{{ end }}"
+              send_resolved: true
+        - name: 'slack-critical'
+          slack_configs:
+            - api_url: "$SLACK_WEBHOOK_URL"
+              channel: "#nexvion-critical"
+              title: "🚨 CRITICAL: {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+              text: "{{ range .Alerts }}{{ .Annotations.description }}{{ end }}"
+              send_resolved: true
+      inhibit_rules:
+        - source_match:
+            severity: 'critical'
+          target_match:
+            severity: 'warning'
+          equal: ['alertname', 'namespace']
+
+  # Grafana configuration
+  grafana:
+    enabled: true
+    adminUser: admin
+    adminPassword: "${GRAFANA_ADMIN_PASSWORD}"
+    persistence:
+      enabled: true
+      storageClassName: gp3
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    datasources:
+      datasources.yaml:
+        apiVersion: 1
+        datasources:
+          - name: Prometheus
+            type: prometheus
+            url: http://monitoring-kube-prometheus-prometheus:9090
+            access: proxy
+            isDefault: true
+            editable: false
+          - name: Loki
+            type: loki
+            url: http://logging-loki.monitoring.svc.cluster.local:3100
+            access: proxy
+            editable: false
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+          - name: 'default'
+            orgId: 1
+            folder: ''
+            type: file
+            disableDeletion: false
+            updateIntervalSeconds: 10
+            allowUiUpdates: true
+            options:
+              path: /var/lib/grafana/dashboards/default
+          - name: 'kubernetes'
+            orgId: 1
+            folder: 'Kubernetes'
+            type: file
+            disableDeletion: false
+            updateIntervalSeconds: 10
+            allowUiUpdates: true
+            options:
+              path: /var/lib/grafana/dashboards/kubernetes
+    dashboards:
+      default:
+        k8s-cluster:
+          gnetId: 315
+          revision: 3
+          datasource: Prometheus
+        k8s-pods:
+          gnetId: 6417
+          revision: 1
+          datasource: Prometheus
+        prometheus-stats:
+          gnetId: 12758
+          revision: 1
+          datasource: Prometheus
+      kubernetes:
+        k8s-nodes:
+          gnetId: 15951
+          revision: 1
+          datasource: Prometheus
+        k8s-deployments:
+          gnetId: 8588
+          revision: 1
+          datasource: Prometheus
+    sidecar:
+      dashboards:
+        enabled: true
+        searchNamespace: ALL
+      datasources:
+        enabled: true
+        searchNamespace: ALL
+    grafana.ini:
+      server:
+        root_url: https://grafana.nexvion.ghanshyam.site
+      auth.generic_oauth:
+        enabled: false
+      auth.anonymous:
+        enabled: false
+
+  # Node Exporter
+  nodeExporter:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 64Mi
+
+  # kube-state-metrics
+  kubeStateMetrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
+# Loki configuration
+loki:
+  enabled: true
+  loki:
+    serviceAccount:
+      create: true
+      name: loki
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::${AWS_ACCOUNT_ID}:role/LokiS3AccessRole
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    schemaConfig:
+      configs:
+        - from: 2024-01-01
+          store: boltdb-shipper
+          object_store: s3
+          schema: v12
+          index:
+            prefix: index_
+            period: 24h
+          limits_config:
+            reject_old_samples: true
+            reject_old_samples_max_age: 168h
+          storage_config:
+            boltdb_shipper:
+              active_index_directory: /data/loki/boltdb-shipper-active
+              cache_location: /data/loki/boltdb-shipper-cache
+              cache_ttl: 24h
+              shared_store: s3
+            s3:
+              bucketnames: nexvion-loki-logs
+              region: ap-south-1
+          promtail:
+            enabled: true
+            config:
+              clients:
+                - url: http://logging-loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+
+# Additional Prometheus rules
+prometheusRules:
+  enabled: true
+  rules:
+    groups:
+      - name: nexvion.rules
+        rules:
+          - alert: HighErrorRate
+            expr: |
+              sum(rate(http_requests_total{status=~"5.."}[5m])) by (namespace, pod)
+              /
+              sum(rate(http_requests_total[5m])) by (namespace, pod)
+              > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High error rate on {{ $labels.pod }}"
+              description: "Error rate > 5% for {{ $labels.namespace }}/{{ $labels.pod }}"
+          - alert: PodCrashLooping
+            expr: |
+              rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.pod }} is crash looping"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} restarted {{ $value }} times in 15 minutes"
+          - alert: HighMemoryUsage
+            expr: |
+              (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.85
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High memory usage on {{ $labels.pod }}"
+              description: "Memory usage > 85% for {{ $labels.namespace }}/{{ $labels.pod }}"
+          - alert: HighCPUUsage
+            expr: |
+              (rate(container_cpu_usage_seconds_total[5m]) / container_spec_cpu_quota/container_spec_cpu_period) > 0.85
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High CPU usage on {{ $labels.pod }}"
+              description: "CPU usage > 85% for {{ $labels.namespace }}/{{ $labels.pod }}"
+          - alert: PodNotReady
+            expr: |
+              kube_pod_status_ready{condition="true"} == 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.pod }} not ready"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been not ready for 5 minutes"
+          - alert: PVCUsageHigh
+            expr: |
+              (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) > 0.85
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "PVC usage high on {{ $labels.persistentvolumeclaim }}"
+              description: "PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is > 85% full"
+          - alert: TargetDown
+            expr: |
+              up == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Target {{ $labels.job }}/{{ $labels.instance }} is down"
+              description: "{{ $labels.job }} target {{ $labels.instance }} has been down for 5 minutes"

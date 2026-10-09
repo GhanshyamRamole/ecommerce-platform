@@ -1,0 +1,42 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexvion-postgresql
+  namespace: nexvion
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: postgresql
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgresql
+      protocol: TCP
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: postgresql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexvion-postgresql-headless
+  namespace: nexvion
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: postgresql
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: postgresql
+      protocol: TCP
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: postgresql

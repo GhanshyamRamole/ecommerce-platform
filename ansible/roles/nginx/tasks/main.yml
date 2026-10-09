@@ -1,0 +1,37 @@
+---
+- name: Install nginx
+  apt:
+    name: nginx
+    state: present
+    update_cache: true
+
+- name: Start and enable nginx
+  systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Remove default site
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
+- name: Configure nginx for frontend proxy
+  template:
+    src: nginx-frontend.conf.j2
+    dest: /etc/nginx/sites-available/frontend
+    mode: '0644'
+  notify: reload nginx
+
+- name: Enable frontend site
+  file:
+    src: /etc/nginx/sites-available/frontend
+    dest: /etc/nginx/sites-enabled/frontend
+    state: link
+  notify: reload nginx
+
+- name: Configure firewall for nginx
+  ufw:
+    rule: allow
+    name: "Nginx Full"
+  when: configure_firewall | default(true)

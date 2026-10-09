@@ -1,0 +1,35 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  # Application controller settings
+  application.instanceLabelKey: argocd.argoproj.io/instance
+  appLabelKey: argocd.argoproj.io/instance
+
+  # Repository credentials (if using private repos)
+  # repository.credentials: |
+
+  # Server settings
+  server.rbac.log.enforce.enable: "true"
+  server.statusbadge.enabled: "true"
+
+  # Resource customizations
+  resource.customizations: |
+    networking.k8s.io/Ingress:
+      health.lua: |
+        hs = {}
+        hs.status = "Healthy"
+        hs.message = "Ingress is ready"
+        return hs
+
+  # Notifications
+  notifications.argoproj.io.enabled: "true"
+
+  # Kustomize version
+  kustomize.buildOptions: --enable-helm
+
+  # Helm settings
+  helm.versions: v3

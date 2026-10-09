@@ -1,0 +1,144 @@
+{{- if .Values.opensearch.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-opensearch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.opensearch.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.opensearch.service.ports.http }}
+      targetPort: 9200
+      protocol: TCP
+    - name: transport
+      port: {{ .Values.opensearch.service.ports.transport }}
+      targetPort: 9300
+      protocol: TCP
+  selector:
+    app: {{ .Release.Name }}-opensearch
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-opensearch-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+    - name: transport
+      port: 9300
+      targetPort: 9300
+  selector:
+    app: {{ .Release.Name }}-opensearch
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-opensearch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}-opensearch-headless
+  replicas: {{ .Values.opensearch.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-opensearch
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-opensearch
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9600"
+        prometheus.io/path: "/_prometheus/metrics"
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 1000:1000 /usr/share/opensearch/data"]
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/opensearch/data
+        - name: increase-vm-max-map
+          image: busybox:1.36
+          command: ["sysctl", "-w", "vm.max_map_count=262144"]
+          securityContext:
+            privileged: true
+      containers:
+        - name: opensearch
+          image: {{ .Values.opensearch.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9200
+              name: http
+            - containerPort: 9300
+              name: transport
+            - containerPort: 9600
+              name: performance-analyzer
+          env:
+            - name: discovery.type
+              value: {{ .Values.opensearch.config["discovery.type"] | default "single-node" }}
+            - name: plugins.security.disabled
+              value: "{{ .Values.opensearch.config["plugins.security.disabled"] | default "true" }}"
+            - name: DISABLE_INSTALL_DEMO_CONFIG
+              value: "{{ .Values.opensearch.config["DISABLE_INSTALL_DEMO_CONFIG"] | default "true" }}"
+            - name: OPENSEARCH_JAVA_OPTS
+              value: "{{ .Values.opensearch.config["OPENSEARCH_JAVA_OPTS"] | default "-Xms1g -Xmx1g" }}"
+            - name: "ES_JAVA_OPTS"
+              value: "-Xms{{ .Values.opensearch.jvm.heapSize }} -Xmx{{ .Values.opensearch.jvm.heapSize }}"
+          resources:
+            {{- toYaml .Values.opensearch.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/opensearch/data
+          livenessProbe:
+            httpGet:
+              path: /_cluster/health
+              port: 9200
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health
+              port: 9200
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        {{- if .Values.opensearch.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-opensearch-data
+        {{- else }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.opensearch.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "opensearch.labels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.opensearch.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.opensearch.persistence.size }}
+  {{- end }}
+{{- end }}

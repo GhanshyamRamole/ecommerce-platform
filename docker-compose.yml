@@ -1,0 +1,138 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexvion-postgres
+    environment:
+      POSTGRES_DB: nexvion
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nexvion-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/nexvion
+      DEBUG: "true"
+      CORS_ORIGINS: '["http://localhost:8080","http://localhost:3000"]'
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-dev-secret-key-change-in-production-min-32-chars}"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "
+        python -m app.db.init_db &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  backend-migrations:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nexvion-backend-migrations
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/nexvion
+      DEBUG: "true"
+      CORS_ORIGINS: '["http://localhost:8080","http://localhost:3000"]'
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-dev-secret-key-change-in-production-min-32-chars}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "
+        alembic upgrade head
+      "
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nexvion-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: nexvion-opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - plugins.security.disabled=${OPENSEARCH_SECURITY_DISABLED:-true}
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:-admin}
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  ai-analyzer:
+    build:
+      context: ./ai/incident-analysis
+      dockerfile: Dockerfile
+    container_name: nexvion-ai-analyzer
+    environment:
+      OPENSEARCH_HOST: "opensearch"
+      OPENSEARCH_PORT: "9200"
+      OPENSEARCH_USER: "admin"
+      OPENSEARCH_PASSWORD: "${OPENSEARCH_PASSWORD:-admin}"
+      OPENSEARCH_SSL: "false"
+      OPENSEARCH_VERIFY: "false"
+      OPENSEARCH_INDEX: "logs-*"
+      # Primary: Groq (free tier) - set GROQ_API_KEY env var
+      GROQ_API_KEY: "${GROQ_API_KEY}"
+      GROQ_MODEL: "llama-3.1-8b-instant"
+      # Fallback: OpenAI - set OPENAI_API_KEY env var
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_MODEL: "gpt-4o-mini"
+    depends_on:
+      backend:
+        condition: service_started
+      opensearch:
+        condition: service_healthy
+    command: python analyzer.py --once
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.0
+    container_name: nexvion-filebeat
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - SERVICE_NAME=filebeat
+      - ENVIRONMENT=development
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD:-admin}
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    command: ["--strict.perms=false"]
+
+volumes:
+  postgres_data:
+  opensearch_data:

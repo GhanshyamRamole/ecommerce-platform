@@ -1,0 +1,128 @@
+# OpenSearch Default Values
+# Single-node configuration for AI Incident Analyzer
+
+opensearch:
+  enabled: true
+  image: opensearchproject/opensearch:2.11.0
+  replicas: 1
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  jvm:
+    heapSize: 1g
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 20Gi
+  config:
+    discovery.type: single-node
+    plugins.security.disabled: true
+    DISABLE_INSTALL_DEMO_CONFIG: "true"
+    OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+  service:
+    type: ClusterIP
+    ports:
+      http: 9200
+      transport: 9300
+  networkPolicy:
+    enabled: true
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                app: ai-analyzer
+        ports:
+          - protocol: TCP
+            port: 9200
+      - from:
+          - podSelector:
+              matchLabels:
+                app: filebeat
+        ports:
+          - protocol: TCP
+            port: 9200
+
+opensearch-dashboards:
+  enabled: true
+  image: opensearchproject/opensearch-dashboards:2.11.0
+  replicas: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 5601
+  opensearchHosts: '["http://{{ .Release.Name }}-opensearch:9200"]'
+
+# Index templates for AI analyzer logs
+indexTemplates:
+  enabled: true
+  templates:
+    - name: logs-template
+      indexPatterns: ["logs-*"]
+      settings:
+        number_of_shards: 1
+        number_of_replicas: 0
+        refresh_interval: 30s
+      mappings:
+        properties:
+          "@timestamp":
+            type: date
+          level:
+            type: keyword
+          message:
+            type: text
+          service:
+            type: keyword
+          trace_id:
+            type: keyword
+          stack_trace:
+            type: text
+
+# ISM policies for log retention
+ismPolicies:
+  enabled: true
+  policies:
+    - name: logs-retention
+      description: "Delete logs older than 30 days"
+      ism_template:
+        index_patterns: ["logs-*"]
+        priority: 100
+      policy:
+        default_state: "hot"
+        states:
+          - name: "hot"
+            actions:
+              - rollover:
+                  min_size: "5gb"
+                  min_index_age: "7d"
+            transitions:
+              - state_name: "warm"
+                conditions:
+                  min_index_age: "7d"
+          - name: "warm"
+            actions:
+              - replica_count:
+                  number_of_replicas: 0
+            transitions:
+              - state_name: "cold"
+                conditions:
+                  min_index_age: "30d"
+          - name: "cold"
+            actions:
+              - delete: {}
+            transitions: []
+
+# ServiceMonitor for Prometheus scraping
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s

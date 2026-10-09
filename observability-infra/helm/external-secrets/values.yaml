@@ -1,0 +1,108 @@
+# External Secrets Operator Values
+# Syncs secrets from AWS Secrets Manager to Kubernetes
+
+external-secrets:
+  enabled: true
+  image:
+    repository: ghcr.io/external-secrets/external-secrets
+    tag: 0.9.0
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+
+  # AWS Secrets Manager provider
+  # Requires IRSA role with secretsmanager:GetSecretValue permission
+  # Role ARN should be annotated on ServiceAccount
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::{{ .Values.global.awsAccountId }}:role/nexvion-external-secrets"
+    name: external-secrets
+
+# ClusterSecretStore for AWS Secrets Manager
+clusterSecretStore:
+  enabled: true
+  name: aws-secrets-manager
+  provider:
+    aws:
+      service: SecretsManager
+      region: "{{ .Values.global.awsRegion }}"
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: external-secrets
+            namespace: external-secrets
+
+# ExternalSecret examples for each service
+externalSecrets:
+  enabled: true
+  secrets:
+    - name: nexvion-secrets
+      namespace: nexvion
+      refreshInterval: 1h
+      secretStoreRef:
+        name: aws-secrets-manager
+        kind: ClusterSecretStore
+      target:
+        name: nexvion-secrets
+        creationPolicy: Owner
+      data:
+        - secretKey: DATABASE_URL
+          remoteRef:
+            key: nexvion/prod/database
+            property: url
+        - secretKey: JWT_SECRET_KEY
+          remoteRef:
+            key: nexvion/prod/jwt
+            property: secret
+        - secretKey: OPENAI_API_KEY
+          remoteRef:
+            key: nexvion/prod/openai
+            property: api_key
+        - secretKey: OPENSEARCH_PASSWORD
+          remoteRef:
+            key: nexvion/prod/opensearch
+            property: password
+
+    - name: ai-analyzer-secrets
+      namespace: monitoring
+      refreshInterval: 1h
+      secretStoreRef:
+        name: aws-secrets-manager
+        kind: ClusterSecretStore
+      target:
+        name: ai-analyzer-secrets
+        creationPolicy: Owner
+      data:
+        - secretKey: OPENAI_API_KEY
+          remoteRef:
+            key: nexvion/prod/openai
+            property: api_key
+        - secretKey: OPENSEARCH_PASSWORD
+          remoteRef:
+            key: nexvion/prod/opensearch
+            property: password
+
+    - name: kibana-secrets
+      namespace: logging
+      refreshInterval: 1h
+      secretStoreRef:
+        name: aws-secrets-manager
+        kind: ClusterSecretStore
+      target:
+        name: kibana-secrets
+        creationPolicy: Owner
+      data:
+        - secretKey: elasticsearch.password
+          remoteRef:
+            key: nexvion/prod/elk
+            property: elasticsearch_password

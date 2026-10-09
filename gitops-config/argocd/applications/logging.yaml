@@ -1,0 +1,51 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: logging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-options: >
+      CreateNamespace=true,PrunePropagationPolicy=foreground
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-org/ecommerce-platform.git
+    targetRevision: main
+    path: observability-infra/helm/logging
+    helm:
+      version: v3.12.0
+      valueFiles:
+        - values.yaml
+      parameters:
+        - name: loki.loki.config.loki.storage_config.s3.bucketnames
+          value: "nexvion-loki-logs"
+        - name: loki.loki.config.loki.storage_config.s3.endpoint
+          value: "s3.ap-south-1.amazonaws.com"
+        - name: loki.loki.config.loki.storage_config.s3.region
+          value: "ap-south-1"
+        - name: loki.loki.config.loki.storage_config.s3.access_key_id
+          value: "$AWS_ACCESS_KEY_ID"
+        - name: loki.loki.config.loki.storage_config.s3.secret_access_key
+          value: "$AWS_SECRET_ACCESS_KEY"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10

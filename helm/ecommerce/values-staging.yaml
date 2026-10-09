@@ -1,0 +1,68 @@
+---
+# Staging Environment Values
+# Usage: helm upgrade --install nexvion-staging ./helm/ecommerce
+#   -n nexvion-staging --create-namespace -f values-staging.yaml
+
+global:
+  environment: staging
+  certificateArn: ""
+
+frontend:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+backend:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  env:
+    DEBUG: "false"
+    CORS_ORIGINS: '["https://staging-nexvion.ghanshyam.site"]'
+
+networkPolicy:
+  enabled: true
+
+aiAnalyzer:
+  enabled: true
+  replicaCount: 1
+  intervalMinutes: 30
+
+# Monitoring (Prometheus + Grafana + Loki)
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    retention: 7d
+    storageSize: 10Gi
+  grafana:
+    enabled: true
+    adminPassword: "${GRAFANA_ADMIN_PASSWORD:-staging-change-me}"
+    persistence:
+      enabled: true
+      size: 2Gi
+  loki:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 5Gi

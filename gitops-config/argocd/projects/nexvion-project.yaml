@@ -1,0 +1,64 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: nexvion
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Nexvion E-Commerce Platform - Multi-environment GitOps
+  sourceRepos:
+    - https://github.com/your-org/ai-ecommerce-devops.git
+  destinations:
+    - namespace: nexvion-dev
+      server: https://kubernetes.default.svc
+    - namespace: nexvion-staging
+      server: https://kubernetes.default.svc
+    - namespace: nexvion
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: '*'
+    - group: 'apps'
+      kind: '*'
+    - group: 'autoscaling'
+      kind: '*'
+    - group: 'networking.k8s.io'
+      kind: '*'
+    - group: 'policy'
+      kind: '*'
+    - group: 'batch'
+      kind: '*'
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+  roles:
+    - name: admin
+      description: Full access to nexvion project
+      policies:
+        - p, proj:nexvion:admin, applications, *, nexvion/*, allow
+        - p, proj:nexvion:admin, repositories, *, *, allow
+        - p, proj:nexvion:admin, clusters, *, *, allow
+      groups:
+        - nexvion-admins
+    - name: developer
+      description: Read-only access to dev/staging
+      policies:
+        - p, proj:nexvion:developer, applications, get,
+          nexvion/nexvion-dev, allow
+        - p, proj:nexvion:developer, applications, get,
+          nexvion/nexvion-staging, allow
+        - p, proj:nexvion:developer, applications, sync,
+          nexvion/nexvion-dev, allow
+      groups:
+        - nexvion-developers

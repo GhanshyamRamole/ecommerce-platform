@@ -1,0 +1,79 @@
+{{- if .Values.aiAnalyzer.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ecommerce.fullname" . }}-ai-analyzer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ai-analyzer
+spec:
+  replicas: {{ .Values.aiAnalyzer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ecommerce.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ai-analyzer
+  template:
+    metadata:
+      labels:
+        {{- include "ecommerce.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ai-analyzer
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ai-analyzer
+          image: "{{ .Values.aiAnalyzer.image.repository }}:{{ .Values.aiAnalyzer.image.tag }}"
+          imagePullPolicy: {{ .Values.aiAnalyzer.image.pullPolicy }}
+          command: ["python", "analyzer.py"]
+          args:
+            - "--interval"
+            - "{{ .Values.aiAnalyzer.intervalMinutes }}"
+            {{- if .Values.aiAnalyzer.alertWebhook }}
+            - "--webhook"
+            - "{{ .Values.aiAnalyzer.alertWebhook }}"
+            {{- end }}
+          env:
+            - name: OPENSEARCH_HOST
+              value: {{ .Values.aiAnalyzer.opensearch.host | quote }}
+            - name: OPENSEARCH_PORT
+              value: {{ .Values.aiAnalyzer.opensearch.port | quote }}
+            - name: OPENSEARCH_USER
+              value: {{ .Values.aiAnalyzer.opensearch.user | quote }}
+            - name: OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ecommerce.fullname" . }}-ai-secrets
+                  key: opensearch-password
+                  optional: true
+            - name: OPENSEARCH_SSL
+              value: {{ .Values.aiAnalyzer.opensearch.use_ssl | quote }}
+            - name: OPENSEARCH_VERIFY
+              value: {{ .Values.aiAnalyzer.opensearch.verify_certs | quote }}
+            - name: OPENSEARCH_INDEX
+              value: {{ .Values.aiAnalyzer.opensearch.index | quote }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ecommerce.fullname" . }}-ai-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: OPENAI_MODEL
+              value: {{ .Values.aiAnalyzer.openai.model | quote }}
+          resources:
+            {{- toYaml .Values.aiAnalyzer.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

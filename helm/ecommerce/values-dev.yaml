@@ -1,0 +1,45 @@
+---
+# Development Environment Values
+# Usage: helm upgrade --install nexvion-dev ./helm/ecommerce
+#   -n nexvion-dev --create-namespace -f values-dev.yaml
+
+global:
+  environment: development
+  certificateArn: ""
+
+frontend:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+backend:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  env:
+    DEBUG: "true"
+    CORS_ORIGINS: >
+      ["http://localhost:8080","http://localhost:3000",
+       "https://nexvion-dev.ghanshyam.site"]
+
+networkPolicy:
+  enabled: true
+
+aiAnalyzer:
+  enabled: true
+  replicaCount: 1
+  intervalMinutes: 60
+
+# Monitoring (Prometheus + Grafana + Loki) - Disabled for dev to save costs
+monitoring:
+  enabled: false

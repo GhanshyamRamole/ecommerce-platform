@@ -1,0 +1,66 @@
+{{- if .Values.ismPolicies.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-ism-policies
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+    component: ism-policies
+data:
+  {{- range $index, $policy := .Values.ismPolicies.policies }}
+  {{ $policy.name }}.json: |
+    {
+      "policy": {{ toJson $policy.policy }},
+      "ism_template": {{ toJson $policy.ism_template }}
+    }
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-apply-ism-policies
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+    component: ism-policies
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "opensearch.labels" . | nindent 8 }}
+        component: ism-policies
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ .Release.Name }}-opensearch
+      containers:
+        - name: apply-policies
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for OpenSearch to be ready..."
+              until curl -s -f http://{{ .Release.Name }}-opensearch:9200/_cluster/health | grep -q '"status":"green"\|"status":"yellow"'; do
+                sleep 5
+              done
+              echo "OpenSearch is ready. Applying ISM policies..."
+              {{- range $index, $policy := .Values.ismPolicies.policies }}
+              echo "Applying policy: {{ $policy.name }}"
+              curl -X PUT "http://{{ .Release.Name }}-opensearch:9200/_plugins/_ism/policies/{{ $policy.name }}" \
+                -H "Content-Type: application/json" \
+                -d @/policies/{{ $policy.name }}.json
+              echo ""
+              {{- end }}
+              echo "All ISM policies applied successfully."
+          volumeMounts:
+            - name: policies
+              mountPath: /policies
+      volumes:
+        - name: policies
+          configMap:
+            name: {{ .Release.Name }}-ism-policies
+{{- end }}

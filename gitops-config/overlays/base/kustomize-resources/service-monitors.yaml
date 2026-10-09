@@ -1,0 +1,60 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nexvion-backend
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexvion
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nexvion-frontend
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexvion
+      app.kubernetes.io/component: frontend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nexvion-ai-analyzer
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: ai-analyzer
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexvion
+      app.kubernetes.io/component: ai-analyzer
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

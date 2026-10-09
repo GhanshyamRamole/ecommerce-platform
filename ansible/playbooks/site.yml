@@ -1,0 +1,23 @@
+---
+- name: Configure PostgreSQL EC2 Instance
+  hosts: postgresql
+  become: true
+  vars:
+    db_name: nexvion
+    db_user: postgres
+    db_password: "{{ vault_db_password }}"
+    pg_version: "16"
+
+  roles:
+    - common
+    - postgresql
+
+- name: Configure Frontend/Backend Servers (if using EC2)
+  hosts: app_servers
+  become: true
+  vars:
+    app_user: "appuser"
+
+  roles:
+    - common
+    - nginx

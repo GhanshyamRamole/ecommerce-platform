@@ -1,0 +1,15 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexvion-backend-config
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+data:
+  APP_NAME: "Nexvion API"
+  APP_VERSION: "0.1.0"
+  DEBUG: "false"
+  CORS_ORIGINS: '["https://nexvion.ghanshyam.site"]'

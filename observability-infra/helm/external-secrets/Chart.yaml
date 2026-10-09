@@ -1,0 +1,19 @@
+apiVersion: v2
+name: external-secrets
+description: External Secrets Operator for syncing secrets from AWS Secrets Manager
+type: application
+version: 1.0.0
+appVersion: "0.9.0"
+keywords:
+  - external-secrets
+  - secrets
+  - aws-secrets-manager
+  - security
+maintainers:
+  - name: DevOps Team
+    email: devops@nexvion.com
+dependencies:
+  - name: external-secrets
+    version: "0.9.0"
+    repository: "https://charts.external-secrets.io"
+    condition: external-secrets.enabled

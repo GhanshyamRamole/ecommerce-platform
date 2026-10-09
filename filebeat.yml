@@ -1,0 +1,35 @@
+filebeat.inputs:
+- type: container
+  paths:
+    - '/var/lib/docker/containers/*/*.log'
+  processors:
+    - add_docker_metadata:
+        host: "unix:///var/run/docker.sock"
+    - add_host_metadata:
+        netinfo.enabled: false
+    - add_cloud_metadata: ~
+
+processors:
+  - add_fields:
+      target: ''
+      fields:
+        service: ${SERVICE_NAME:-unknown}
+        environment: ${ENVIRONMENT:-development}
+
+output.elasticsearch:
+  hosts: ["http://opensearch:9200"]
+  index: "logs-%{+yyyy.MM.dd}"
+  username: "admin"
+  password: "${OPENSEARCH_PASSWORD:-admin}"
+
+setup.template:
+  name: "logs"
+  pattern: "logs-*"
+  settings:
+    index.number_of_shards: 1
+    index.number_of_replicas: 0
+
+logging.level: info
+logging.to_files: false
+logging.to_syslog: false
+logging.metrics.enabled: false

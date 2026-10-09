@@ -1,0 +1,47 @@
+{{- $name := .Release.Name }}
+{{- $chart := .Chart.Name }}
+{{- $version := .Chart.Version }}
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-opensearch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $chart }}
+    app.kubernetes.io/instance: {{ $name }}
+    app.kubernetes.io/version: {{ $version }}
+    app.kubernetes.io/managed-by: Helm
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-opensearch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $chart }}
+    app.kubernetes.io/instance: {{ $name }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-opensearch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $chart }}
+    app.kubernetes.io/instance: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}-opensearch
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ $name }}-opensearch
+  apiGroup: rbac.authorization.k8s.io

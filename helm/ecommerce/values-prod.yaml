@@ -1,0 +1,77 @@
+---
+global:
+  environment: production
+  certificateArn: "${CERTIFICATE_ARN}"
+
+frontend:
+  replicaCount: 3
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 256Mi
+    requests:
+      cpu: 250m
+      memory: 128Mi
+
+backend:
+  replicaCount: 3
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    DEBUG: "false"
+    CORS_ORIGINS: '["https://nexvion.ghanshyam.site"]'
+
+networkPolicy:
+  enabled: true
+
+aiAnalyzer:
+  enabled: true
+  replicaCount: 1
+  intervalMinutes: 15
+  alertWebhook: ""
+  image:
+    repository: nexvion-ai-analyzer
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  opensearch:
+    host: "opensearch.monitoring.svc.cluster.local"
+    port: 9200
+    user: "admin"
+    password: "${OPENSEARCH_PASSWORD}"
+    use_ssl: false
+    verify_certs: false
+    index: "logs-*"
+  openai:
+    apiKey: "${OPENAI_API_KEY}"
+    model: "gpt-4"
+
+# Monitoring (Prometheus + Grafana + Loki)
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    retention: 15d
+    storageSize: 20Gi
+  grafana:
+    enabled: true
+    adminPassword: "${GRAFANA_ADMIN_PASSWORD}"
+    persistence:
+      enabled: true
+      size: 5Gi
+  loki:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi

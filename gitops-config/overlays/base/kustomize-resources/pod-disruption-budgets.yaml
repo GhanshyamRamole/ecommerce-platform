@@ -1,0 +1,48 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nexvion-backend
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexvion
+      app.kubernetes.io/component: backend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nexvion-frontend
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexvion
+      app.kubernetes.io/component: frontend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nexvion-ai-analyzer
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: ai-analyzer
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexvion
+      app.kubernetes.io/component: ai-analyzer

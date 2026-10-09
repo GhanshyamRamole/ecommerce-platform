@@ -1,0 +1,140 @@
+pipeline {
+    agent none
+
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+    }
+
+    parameters {
+        booleanParam(name: 'FORCE_ALL', defaultValue: false,
+                     description: 'Trigger all service pipelines regardless of what changed')
+    }
+
+    stages {
+
+        stage('Detect Changes') {
+            when {
+                beforeAgent true
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                    branch 'release/*'
+                    changeRequest()
+                }
+            }
+            agent any
+            steps {
+                checkout scm
+                script {
+                    // Compare with the last SUCCESSFUL orchestrator build, so nothing is lost when several
+                    // commits land together or when a previous run failed.
+                    def changed = sh(returnStdout: true, script: '''#!/usr/bin/env bash
+                        set -uo pipefail
+                        base="${GIT_PREVIOUS_SUCCESSFUL_COMMIT:-}"
+                        [ -n "$base" ] || base="$(git rev-parse --verify -q HEAD~1 || true)"
+                        if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+                            echo "__ALL__"; exit 0
+                        fi
+                        git diff --name-only "$base" HEAD 2>/dev/null || echo "__ALL__"
+                    ''').trim()
+
+                    def files        = changed ? changed.readLines() : []
+                    boolean forceAll = params.FORCE_ALL == true
+
+                    env.TRIGGER_BACKEND  = (forceAll || pathsTouched(files, ['__ALL__', 'backend/', 'helm/']))                ? 'true' : 'false'
+                    env.TRIGGER_FRONTEND = (forceAll || pathsTouched(files, ['__ALL__', 'frontend/', 'helm/']))               ? 'true' : 'false'
+                    env.TRIGGER_AI       = (forceAll || pathsTouched(files, ['__ALL__', 'ai/incident-analysis/', 'helm/']))  ? 'true' : 'false'
+
+                    echo "Changed files: ${files.size()} (force=${forceAll})"
+                    echo "Trigger backend=${env.TRIGGER_BACKEND} frontend=${env.TRIGGER_FRONTEND} ai-analyzer=${env.TRIGGER_AI}"
+                    currentBuild.description = "backend=${env.TRIGGER_BACKEND} frontend=${env.TRIGGER_FRONTEND} ai=${env.TRIGGER_AI}"
+                }
+            }
+            post {
+                cleanup { cleanWs(deleteDirs: true, notFailBuild: true) }
+            }
+        }
+
+        // No agent: waiting for downstream builds must not occupy an executor.
+        stage('Trigger Pipelines') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                    branch 'release/*'
+                    changeRequest()
+                }
+            }
+            parallel {
+                stage('Backend') {
+                    when { expression { env.TRIGGER_BACKEND == 'true' } }
+                    steps { script { triggerService('nexvion-backend') } }
+                }
+                stage('Frontend') {
+                    when { expression { env.TRIGGER_FRONTEND == 'true' } }
+                    steps { script { triggerService('nexvion-frontend') } }
+                }
+                stage('AI Analyzer') {
+                    when { expression { env.TRIGGER_AI == 'true' } }
+                    steps { script { triggerService('nexvion-ai-analyzer') } }
+                }
+            }
+        }
+    }
+
+    post {
+        failure  { script { notifyBuild('FAILURE') } }
+        unstable { script { notifyBuild('UNSTABLE') } }
+        fixed    { script { notifyBuild('BACK TO NORMAL') } }
+    }
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+@NonCPS
+boolean pathsTouched(List files, List prefixes) {
+    for (f in files) {
+        for (p in prefixes) {
+            if (f == p || f.startsWith(p)) { return true }
+        }
+    }
+    return false
+}
+
+// Starts <job>/<this branch> and waits for it. Multibranch jobs are addressed by
+// branch ('/' in a branch name is encoded as %2F). '../' resolves to the sibling
+// multibranch project next to this one. For pull requests BRANCH_NAME is 'PR-<n>'.
+def triggerService(String job) {
+    String ref = env.BRANCH_NAME.replace('/', '%2F')
+    build job: "../${job}/${ref}", wait: true, propagate: true
+}
+
+def notifyBuild(String status) {
+    String recipients = ''
+    try {
+        withCredentials([string(credentialsId: 'default-recipients', variable: 'DEFAULT_RECIPIENTS')]) {
+            recipients = env.DEFAULT_RECIPIENTS
+        }
+    } catch (Exception ignored) {
+        echo "Credential 'default-recipients' not configured - notifying commit authors/requester only."
+    }
+    try {
+        emailext(
+            subject: "[${status}] ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+            body: "Job: ${env.JOB_NAME}\nBuild: ${env.BUILD_URL}\nBranch: ${env.BRANCH_NAME}\n" +
+                  "Triggered: backend=${env.TRIGGER_BACKEND ?: 'n/a'} frontend=${env.TRIGGER_FRONTEND ?: 'n/a'} " +
+                  "ai-analyzer=${env.TRIGGER_AI ?: 'n/a'}\nResult: ${currentBuild.currentResult}\n",
+            to: recipients,
+            recipientProviders: [culprits(), requestor()],
+            mimeType: 'text/plain'
+        )
+    } catch (Throwable t) {
+        echo "Email notification failed (is Email Extension configured?): ${t.getMessage()}"
+    }
+}

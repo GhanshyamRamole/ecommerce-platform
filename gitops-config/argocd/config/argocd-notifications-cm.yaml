@@ -1,0 +1,80 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # Slack integration - token comes from Kubernetes secret
+  service.slack: |
+    token: $slack-token
+  service.slack.nexvion: |
+    token: $slack-token
+    icon: https://argoproj.github.io/argo-cd/assets/logo.png
+
+  # Triggers
+  trigger.on-sync-succeeded: |
+    - when: app.status.sync.status == 'Synced'
+      send:
+        - nexvion-deployments
+        - nexvion-alerts
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send:
+        - nexvion-alerts
+        - nexvion-deployments
+  trigger.on-sync-running: |
+    - when: app.status.operationState.phase in ['Running']
+      send:
+        - nexvion-deployments
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send:
+        - nexvion-alerts
+  trigger.on-degraded-to-healthy: |
+    - when: >
+        app.status.health.status == 'Healthy' and
+        app.status.health.previousStatus == 'Degraded'
+      send:
+        - nexvion-deployments
+
+  # Templates
+  template.app-sync-succeeded: |
+    message: |
+      :white_check_mark: *Application Synced Successfully*
+      *Application:* {{.app.metadata.name}}
+      *Namespace:* {{.app.spec.destination.namespace}}
+      *Revision:* {{.app.status.sync.revision}}
+      *Time:* {{.app.status.operationState.finishedAt}}
+  template.app-sync-failed: |
+    message: >
+      :x: *Application Sync Failed*
+      *Application:* {{.app.metadata.name}}
+      *Namespace:* {{.app.spec.destination.namespace}}
+      *Error:* {{.app.status.operationState.message}}
+      *Time:* {{.app.status.operationState.finishedAt}}
+      <{{.context.argocdServerUrl}}/applications/
+      {{.app.metadata.name}}|View in ArgoCD>
+  template.app-health-degraded: |
+    message: >
+      :warning: *Application Health Degraded*
+      *Application:* {{.app.metadata.name}}
+      *Namespace:* {{.app.spec.destination.namespace}}
+      *Health:* {{.app.status.health.status}}
+      *Message:* {{.app.status.health.message}}
+      <{{.context.argocdServerUrl}}/applications/
+      {{.app.metadata.name}}|View in ArgoCD>
+
+  # Subscriptions
+  subscriptions: |
+    - recipients:
+        - nexvion-deployments
+      triggers:
+        - on-sync-succeeded
+        - on-sync-running
+        - on-degraded-to-healthy
+    - recipients:
+        - nexvion-alerts
+      triggers:
+        - on-sync-failed
+        - on-health-degraded

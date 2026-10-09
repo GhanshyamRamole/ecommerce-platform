@@ -1,0 +1,14 @@
+apiVersion: v2
+name: opensearch
+description: OpenSearch Helm chart for AI Incident Analyzer
+type: application
+version: 1.0.0
+appVersion: "2.11.0"
+keywords:
+  - opensearch
+  - logging
+  - search
+  - ai-analyzer
+maintainers:
+  - name: DevOps Team
+    email: devops@nexvion.com

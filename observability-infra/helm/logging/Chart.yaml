@@ -1,0 +1,18 @@
+apiVersion: v2
+name: logging
+description: Loki + Promtail logging stack
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+dependencies:
+  - name: loki
+    version: "6.0.0"
+    repository: "https://grafana.github.io/helm-charts"
+  - name: promtail
+    version: "6.0.0"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: promtail.enabled
+
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com

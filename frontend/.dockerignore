@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Terraform
+.terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Secrets
+*.pem
+*.key
+*.crt
+secrets.yaml
+*.tfvars
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Build outputs
+dist/
+build/

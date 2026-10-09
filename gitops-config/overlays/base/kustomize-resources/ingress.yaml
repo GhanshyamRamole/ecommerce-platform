@@ -1,0 +1,36 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexvion-frontend
+  labels:
+    app.kubernetes.io/name: nexvion
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: nexvion-ecommerce
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/certificate-arn: "PLACEHOLDER_CERT_ARN"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/actions.ssl-redirect: >
+      {"Type": "redirect", "RedirectConfig":
+       { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}
+spec:
+  ingressClassName: alb
+  tls:
+    - secretName: nexvion-tls
+      hosts:
+        - nexvion.ghanshyam.site
+  rules:
+    - host: nexvion.ghanshyam.site
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexvion-frontend
+                port:
+                  number: 80

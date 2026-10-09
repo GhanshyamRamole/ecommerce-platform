@@ -1,0 +1,69 @@
+{{- if .Values.indexTemplates.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-index-templates
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+    component: index-templates
+data:
+  {{- range $index, $template := .Values.indexTemplates.templates }}
+  {{ $template.name }}.json: |
+    {
+      "index_patterns": {{ toJson $template.indexPatterns }},
+      "template": {
+        "settings": {{ toJson $template.settings }},
+        "mappings": {{ toJson $template.mappings }}
+      }
+    }
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-apply-index-templates
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "opensearch.labels" . | nindent 4 }}
+    component: index-templates
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "opensearch.labels" . | nindent 8 }}
+        component: index-templates
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ .Release.Name }}-opensearch
+      containers:
+        - name: apply-templates
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for OpenSearch to be ready..."
+              until curl -s -f http://{{ .Release.Name }}-opensearch:9200/_cluster/health | grep -q '"status":"green"\|"status":"yellow"'; do
+                sleep 5
+              done
+              echo "OpenSearch is ready. Applying index templates..."
+              {{- range $index, $template := .Values.indexTemplates.templates }}
+              echo "Applying template: {{ $template.name }}"
+              curl -X PUT "http://{{ .Release.Name }}-opensearch:9200/_index_template/{{ $template.name }}" \
+                -H "Content-Type: application/json" \
+                -d @/templates/{{ $template.name }}.json
+              echo ""
+              {{- end }}
+              echo "All index templates applied successfully."
+          volumeMounts:
+            - name: templates
+              mountPath: /templates
+      volumes:
+        - name: templates
+          configMap:
+            name: {{ .Release.Name }}-index-templates
+{{- end }}

@@ -1,0 +1,27 @@
+---
+all:
+  vars:
+    ansible_user: ubuntu
+    ansible_ssh_private_key_file: ~/.ssh/nexvion-key.pem
+    db_name: nexvion
+    db_user: postgres
+    pg_version: "16"
+    configure_firewall: true
+    allowed_cidrs:
+      - "10.0.0.0/8"  # VPC CIDR
+
+  children:
+    postgresql:
+      hosts:
+        postgres-ec2:
+          ansible_host: POSTGRES_PRIVATE_IP
+      vars:
+        vault_db_password: "{{ lookup('env', 'DB_PASSWORD') }}"
+
+    app_servers:
+      hosts:
+        {}
+        # If using EC2 for app servers instead of EKS
+        # app-ec2:
+        #   ansible_host: APP_PRIVATE_IP
+      vars: {}
