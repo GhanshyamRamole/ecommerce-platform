@@ -302,7 +302,7 @@ jobs:
 
       - name: Create Pull Request for production approval
         if: ${{ matrix.create_pr }}
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITOPS_BOT_TOKEN }}
           title: "Release ${{ github.sha }} to Production"
